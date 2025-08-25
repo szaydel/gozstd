@@ -1,4 +1,4 @@
-ARG builder_image
+ARG builder_image=non-existing
 FROM $builder_image
 
 
