@@ -357,3 +357,96 @@ func TestCompressDecompressMultiFrames(t *testing.T) {
 			plainData, origData, len(plainData), len(origData))
 	}
 }
+
+func TestCompressDecompressLimitedOK(t *testing.T) {
+
+	dst := make([]byte, 0, 512)
+	f := func(compressedData []byte, limit int) {
+		t.Helper()
+		var err error
+		dst, err = DecompressLimited(dst[:0], compressedData, limit)
+		if err != nil {
+			t.Fatalf("cannot decompress data with limit=%d: %s", limit, err)
+		}
+	}
+
+	var bb bytes.Buffer
+	for bb.Len() < 12*128*1024 {
+		fmt.Fprintf(&bb, "compress/decompress big data %d, ", bb.Len())
+	}
+	originData := bb.Bytes()
+	// block decompression
+	cd := Compress(nil, originData[:256])
+
+	// origin data fits dst buffer
+	f(cd, 300)
+
+	cd = Compress(nil, originData)
+
+	// decompressed size matches block limit
+	f(cd, len(originData))
+
+	// unlimited
+	f(cd, 0)
+
+	// stream decompression
+	var bbCompress bytes.Buffer
+	if err := StreamCompress(&bbCompress, &bb); err != nil {
+		t.Errorf("cannot compress stream of size %d: %s", bb.Len(), err)
+	}
+	// stream compression uses adaptive window size
+	// which by default shouldn't exceed 8MB
+	// See windowLog
+	f(bbCompress.Bytes(), 8*1e6)
+
+	// stream decompression unlimited
+	f(bbCompress.Bytes(), 0)
+
+}
+
+func TestCompressDecompressLimitedFail(t *testing.T) {
+	dst := make([]byte, 0, 8)
+
+	f := func(compressedData []byte, limit int) {
+		t.Helper()
+		_, err := DecompressLimited(dst[:0], compressedData, limit)
+		if err == nil {
+			t.Fatalf("expecting non-nil error when decompressing data with limit: %d", limit)
+		}
+	}
+
+	var bb bytes.Buffer
+	for bb.Len() < 32*1024*1024 {
+		fmt.Fprintf(&bb, "compress/decompress big raw data line %d, ", bb.Len())
+	}
+
+	// valid input bigger than limit - fits allocated buffer
+	cd := Compress(nil, bb.Bytes()[:7])
+	f(cd, 5)
+
+	// valid input bigger than limit with new dst allocation
+	cd = Compress(nil, bb.Bytes()[:32])
+	f(cd, 16)
+
+	input, err := hex.DecodeString("28b52ffd8400005ed0b209000030ecaf4412")
+	if err != nil {
+		t.Fatalf("BUG: unexpected hex input: %s", err)
+	}
+	// input with framecontent bigger than actual payload
+	f(input, 512)
+
+	// input with stream windowSize bigger than limit
+	input, err = hex.DecodeString("28b52ffd00983d0100b401636f6d70726573732f646520626967206461746120302c2033322c0300437d0027f9268a17")
+	if err != nil {
+		t.Fatalf("BUG: unexpected hex input: %s", err)
+	}
+	f(input, 10*1e6)
+
+	// input with stream size bigger than limit
+	var compressBuf bytes.Buffer
+	if err := StreamCompress(&compressBuf, &bb); err != nil {
+		t.Fatalf("unexpected StreamCompress errror :%s", err)
+	}
+	f(compressBuf.Bytes(), 8*1e6)
+
+}
